@@ -43,10 +43,14 @@ with timestamp decoding, language detection and word times from cross-attention 
 `filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
 
-Both are **optional features**, off by default and never built for the web:
+Both are **optional features** of the library crates, and they are never built for the web.
+The desktop app and the CLI turn them on by default, so a normal build transcribes offline
+(the model is downloaded on first use, not bundled). `--no-default-features` leaves them out.
 
 - `whisper` (on `filmcraft-speech`, `filmcraft-engine`, and the `filmcraft` / `filmcraft-cli`
-  apps, where it also enables downloads): candle inference.
+  apps, where it also enables downloads): candle inference. This is the local path: OpenAI
+  Whisper via candle on the CPU. MLX Whisper is Apple-only and not pure Rust; NVIDIA Parakeet
+  is not a pure-Rust dependency. `whisper-base` is the default model (multilingual, MIT).
 - `download` (`speech-download` on the engine): HTTPS downloads with rustls + RustCrypto and the
   operating system's certificate verifier.
 

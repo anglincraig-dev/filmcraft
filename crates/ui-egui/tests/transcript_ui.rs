@@ -110,3 +110,34 @@ fn transcript_tab_selects_and_extracts_words() {
     assert_eq!(left, ["Hello", "there", "friend."]);
     assert_eq!(d.ids("text.transcript.word.").len(), 3);
 }
+
+/// Filler words and pauses are marked in the transcript, and Remove Pauses closes a long gap.
+#[test]
+fn transcript_marks_fillers_and_pauses_and_can_remove_the_pause() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "text.tab.Transcript"}));
+    d.frames(3);
+    let mut probe = Session::default();
+    probe.execute("file.openDemoProject", json!({})).unwrap();
+    let a = probe.active_sequence().unwrap().audio_tracks[0].items[0].clone();
+    let tk = |s: f64| a.source_in.0 + (s * filmcraft_time::TICKS_PER_SECOND as f64) as i64;
+    let words = vec![
+        json!({"text": "Hello", "start": tk(0.2), "end": tk(0.6), "speaker": 0}),
+        json!({"text": "um", "start": tk(0.7), "end": tk(1.0), "speaker": 0}),
+        json!({"text": "there", "start": tk(3.0), "end": tk(3.4), "speaker": 0}),
+    ];
+    d.ok("engine.execute", json!({"command": "transcript.set", "params": {"item": a.item.0, "transcript": {"language": "en", "words": words}}}));
+    d.frames(3);
+    assert!(d.ids("text.transcript.removePauses").contains(&"text.transcript.removePauses".to_string()));
+    assert!(d.ids("text.transcript.removeFillers").contains(&"text.transcript.removeFillers".to_string()));
+    let pauses = d.ids("text.transcript.pause.");
+    assert!(!pauses.is_empty(), "a 2s gap is marked as a pause: {pauses:?}");
+    d.ok("ui.click", json!({"id": "text.transcript.removePauses"}));
+    d.frames(3);
+    let r = d.ok("engine.execute", json!({"command": "transcript.inspect", "params": {}}));
+    let starts: Vec<i64> = r["words"].as_array().unwrap().iter().filter_map(|w| w["sequenceStart"].as_i64().or_else(|| w["start"].as_i64())).collect();
+    let gap = starts.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0);
+    assert!(starts.len() >= 2 && gap < filmcraft_time::TICKS_PER_SECOND, "the long pause was closed, gap is {gap} ticks in {r}");
+}

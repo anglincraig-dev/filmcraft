@@ -290,9 +290,9 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
         ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, tl!("Transcribe sequence"), Tokens::semibold(16.0), t.text);
         let note = if filmcraft_speech_available(app) {
-            tl!("Speech-to-text turns the dialogue into editable text.")
+            tl!("Local Whisper runs on this machine. The base model downloads once, then transcription stays offline.")
         } else {
-            tl!("This build has no speech-to-text; import a transcript with transcript.set.")
+            tl!("This build has no speech engine. Rebuild with --features whisper, or import a transcript with transcript.set.")
         };
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
@@ -318,10 +318,18 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let hits: Vec<std::ops::Range<usize>> = filmcraft_edit::transcript::search(&words, &app.ui.transcript_search);
     let mut x = bar.min.x + sw + 10.0;
     let range = sel.map(|(a, b)| json!({"from": a.min(b), "to": a.max(b)}));
-    let tools: [(Icon, &str, &str, bool, &str, Value); 4] = [
+    let tools: [(Icon, &str, &str, bool, &str, Value); 5] = [
         (Icon::Razor, "text.transcript.extract", tl!("Extract selected text"), sel.is_some(), "transcript.extract", range.clone().unwrap_or_default()),
         (Icon::Trash, "text.transcript.lift", tl!("Lift selected text"), sel.is_some(), "transcript.lift", range.unwrap_or_default()),
         (Icon::Link, "text.transcript.removeFillers", tl!("Remove filler words"), true, "transcript.removeFillers", json!({})),
+        (
+            Icon::Pause,
+            "text.transcript.removePauses",
+            tl!("Remove pauses longer than 0.75s"),
+            true,
+            "transcript.removePauses",
+            json!({"minSeconds": 0.75, "keepSeconds": 0.1}),
+        ),
         (Icon::Captions, "text.transcript.createCaptions", tl!("Create captions"), true, "transcript.createCaptions", json!({})),
     ];
     for (icon, id, label, enabled, cmd, params) in tools {
@@ -343,6 +351,9 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.painter().rect_filled(list, 3.0, t.app_bg);
     let ph = app.session.playhead();
     let current = filmcraft_edit::transcript::word_at(&words, ph);
+    let fillers: Vec<String> = filmcraft_edit::transcript::DEFAULT_FILLERS.iter().map(|s| (*s).to_string()).collect();
+    let filler_hits = filmcraft_edit::transcript::find_fillers(&words, &fillers);
+    let pause_at = filmcraft_time::Tick::from_seconds_f64(0.75);
     let paras = filmcraft_edit::transcript::paragraphs(&words, filmcraft_time::Tick::from_seconds_f64(1.5));
     let rate = app.session.sequence_rate();
     let df = app.session.active_sequence().is_some_and(|q| q.settings.drop_frame);
@@ -356,15 +367,51 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add(&format!("text.transcript.paragraph.{pi}"), hr.rect, "Paragraph");
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(4.0, 3.0);
+                // A gap at or above the paragraph split (1.5s) starts a new paragraph, so the
+                // pause chip has to be drawn before that paragraph's first word.
+                if pr.start > 0 {
+                    let prev = words.get(pr.start - 1);
+                    let cur = words.get(pr.start);
+                    if let (Some(prev), Some(cur)) = (prev, cur) {
+                        let gap = cur.start - prev.end;
+                        if gap >= pause_at {
+                            let label = format!("{:.1}s", gap.seconds());
+                            let pause = ui.label(egui::RichText::new(label).size(11.0).color(t.text_faint).italics());
+                            app.auto.add(&format!("text.transcript.pause.{}", pr.start), pause.rect, "Pause");
+                        }
+                    }
+                }
                 for i in pr.clone() {
                     let w = &words[i];
+                    if i > pr.start
+                        && let Some(prev) = words.get(i - 1)
+                    {
+                        let gap = w.start - prev.end;
+                        if gap >= pause_at {
+                            let label = format!("{:.1}s", gap.seconds());
+                            let pause = ui.label(egui::RichText::new(label).size(11.0).color(t.text_faint).italics());
+                            app.auto.add(&format!("text.transcript.pause.{i}"), pause.rect, "Pause");
+                        }
+                    }
                     let in_sel = sa.is_some_and(|a| i >= a) && sb.is_some_and(|b| i <= b);
                     let hit = hits.iter().any(|h| h.contains(&i));
-                    let mut text = egui::RichText::new(&w.text).size(13.0).color(if Some(i) == current { t.hot_text } else { t.text });
+                    let filler = filler_hits.iter().any(|h| h.contains(&i));
+                    let mut text = egui::RichText::new(&w.text).size(13.0).color(if Some(i) == current {
+                        t.hot_text
+                    } else if filler {
+                        Color32::from_rgb(196, 148, 74)
+                    } else {
+                        t.text
+                    });
+                    if filler {
+                        text = text.strikethrough();
+                    }
                     if in_sel {
                         text = text.background_color(t.row_selected);
                     } else if hit {
                         text = text.background_color(t.hover);
+                    } else if filler {
+                        text = text.background_color(Color32::from_rgba_unmultiplied(196, 148, 74, 48));
                     }
                     let resp = ui.add(egui::Label::new(text).sense(Sense::click()));
                     app.auto.add(&format!("text.transcript.word.{i}"), resp.rect, &w.text);

@@ -39,7 +39,10 @@ fn unicode_to_byte() -> HashMap<char, u8> {
             n += 1;
         }
     }
-    bs.iter().zip(&cs).map(|(&b, &c)| (char::from_u32(c).expect("valid"), b as u8)).collect()
+    // The table only uses scalar values (the printable bytes, Latin-1, then U+0100 and up for
+    // the 68 bytes those ranges skip). Surrogates never appear, so a rejected code point is
+    // dropped instead of panicking.
+    bs.iter().zip(&cs).filter_map(|(&b, &c)| char::from_u32(c).zip(u8::try_from(b).ok())).collect()
 }
 
 impl Tokenizer {
