@@ -206,6 +206,10 @@ pub struct Playback {
     /// Wall-clock (egui time, s) and timeline tick when playback (re)started.
     anchor_time: f64,
     anchor_tick: Tick,
+    /// Playhead this clock last wrote. A transport key moves the playhead off that value; the
+    /// next frame then restarts from the new position. Without this, the clock rewrote the
+    /// playhead from the pre-key anchor, so Right (and Up/Down) jumped backward.
+    clock_playhead: Option<Tick>,
     /// Audio frames played at anchor (when the audio clock drives).
     pub audio_clock: bool,
     /// The audio clock's last reading and when (egui time, s) it last moved: a device that stops
@@ -902,6 +906,7 @@ impl FilmcraftApp {
         self.playback.speed = speed;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends
+        self.playback.clock_playhead = None;
         self.playback.preroll = Some(-1.0);
         self.playback.preroll_ready = false;
         if let Some(a) = self.audio.as_mut() {
@@ -960,6 +965,7 @@ impl FilmcraftApp {
         self.playback.playing = false;
         self.playback.stop_at = None;
         self.playback.preroll = None;
+        self.playback.clock_playhead = None;
         self.playback.meter.finish();
         self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {
@@ -1035,6 +1041,15 @@ impl FilmcraftApp {
         if self.playback.anchor_time < 0.0 {
             self.playback.anchor_time = now;
         }
+        // A shortcut or seek moved the playhead since the clock last wrote it. Keep that position:
+        // continuing from the old anchor pulls the playhead backward (Right, and Up/Down, "go left").
+        let parked = self.session.playhead();
+        if self.playback.clock_playhead.is_some_and(|c| c != parked) {
+            self.playback.anchor_tick = parked;
+            self.playback.anchor_time = now;
+            self.playback.audio_seen = (0, now);
+            self.start_audio();
+        }
         let rate = self.session.sequence_rate();
         let reading = if self.playback.audio_clock { self.audio.as_ref().and_then(|a| a.played_frames().map(|f| (f, a.sample_rate()))) } else { None };
         if self.playback.audio_clock && reading.is_none() {
@@ -1095,6 +1110,7 @@ impl FilmcraftApp {
         } else {
             self.session.set_playhead(t);
         }
+        self.playback.clock_playhead = Some(self.session.playhead());
         ctx.request_repaint();
     }
 

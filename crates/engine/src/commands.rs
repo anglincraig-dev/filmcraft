@@ -82,7 +82,12 @@ pub(crate) fn has_selection(s: &Session) -> std::result::Result<(), String> {
 /// Clips or captions selected (Clear / Ripple Delete work on either).
 fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.transition_selection.is_empty() && s.state.gap_selection.is_none() {
+    if s.state.selection.is_empty()
+        && s.state.caption_selection.is_empty()
+        && s.state.transition_selection.is_empty()
+        && s.state.gap_selection.is_none()
+        && !selected_edit_closes(s)
+    {
         Err("nothing selected".into())
     } else {
         Ok(())
@@ -1328,6 +1333,9 @@ fn build() -> Vec<CommandSpec> {
                     && let Some(g) = s.state.gap_selection
                 {
                     return ripple_delete_gap(s, g);
+                }
+                if s.state.caption_selection.is_empty() && selected_edit_closes(s) {
+                    return close_selected_edit(s);
                 }
                 let caps = s.state.caption_selection.clone();
                 return crate::captions::delete(s, &caps, false);
@@ -3530,6 +3538,72 @@ fn select_gap(s: &mut Session, p: &Value) -> Result<Value> {
     s.state.edit_points.clear();
     s.state.trim_shift = Default::default();
     Ok(json!({"track": track.0, "start": range.start.0, "end": range.end().0}))
+}
+
+/// The selected edit sits on a gap (Delete ripples it closed) or a through edit (Delete joins it).
+fn selected_edit_closes(s: &Session) -> bool {
+    let Some(seq) = s.active_sequence() else { return false };
+    s.state.edit_points.iter().any(|ep| {
+        let Some(time) = crate::trim::edit_time(seq, ep) else { return false };
+        let Some((tid, _)) = seq.find_item(ep.clip) else { return false };
+        let Some(tr) = seq.track(tid) else { return false };
+        edit::through::track_gaps(tr).iter().any(|g| g.start == time || g.end() == time)
+            || edit::through::track_through_edits(tr).iter().any(|e| e.time == time && (e.left == ep.clip || e.right == ep.clip))
+    })
+}
+
+enum EditClose {
+    Gap(crate::GapSelection),
+    Join(Vec<(filmcraft_project::ClipId, filmcraft_project::ClipId)>),
+}
+
+/// Delete / Backspace on a selected edit: close the gap it borders, or join it when it is a through edit.
+fn close_selected_edit(s: &mut Session) -> Result<Value> {
+    let action = {
+        let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        let points = s.state.edit_points.clone();
+        let gap = points.iter().find_map(|ep| {
+            let time = crate::trim::edit_time(seq, ep)?;
+            let (tid, _) = seq.find_item(ep.clip)?;
+            let tr = seq.track(tid)?;
+            let range = edit::through::track_gaps(tr).into_iter().find(|g| g.start == time || g.end() == time)?;
+            Some(crate::GapSelection { track: tid, range })
+        });
+        if let Some(g) = gap {
+            EditClose::Gap(g)
+        } else {
+            let joins = points
+                .iter()
+                .filter_map(|ep| {
+                    let time = crate::trim::edit_time(seq, ep)?;
+                    let (tid, _) = seq.find_item(ep.clip)?;
+                    let tr = seq.track(tid)?;
+                    edit::through::track_through_edits(tr)
+                        .into_iter()
+                        .find(|e| e.time == time && (e.left == ep.clip || e.right == ep.clip))
+                        .map(|e| (e.left, e.right))
+                })
+                .collect::<Vec<_>>();
+            EditClose::Join(joins)
+        }
+    };
+    match action {
+        EditClose::Gap(g) => {
+            s.state.gap_selection = Some(g);
+            s.state.edit_points.clear();
+            ripple_delete_gap(s, g)
+        }
+        EditClose::Join(joins) if joins.is_empty() => Err(EngineError::Other("the selected edit has no gap to close".into())),
+        EditClose::Join(joins) => {
+            let n = s.edit_sequence("Join Through Edits", |q, _, st| {
+                let n = edit::through::join_through_edits_where(q, |a, b| joins.iter().any(|(l, r)| *l == a && *r == b));
+                st.edit_points.clear();
+                st.selection.retain(|c| q.find_item(*c).is_some());
+                Ok(n)
+            })?;
+            Ok(json!({"joined": n}))
+        }
+    }
 }
 
 /// Close the selected gap (Delete, Backspace or Ripple Delete on a gap).

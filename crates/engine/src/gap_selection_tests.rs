@@ -141,6 +141,41 @@ fn a_gap_on_a_locked_track_cannot_be_selected_or_closed() {
     assert_eq!(range(&s, sound2).0, f(96), "the unlocked sound stays in sync");
 }
 
+/// D in the empty time between two clips selects that gap; Delete ripples it closed.
+#[test]
+fn d_in_a_gap_selects_it_and_delete_closes_it() {
+    let mut s = Session::default();
+    let [_, (picture2, sound2)] = two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    s.set_playhead(f(60));
+    let r = s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(r.get("gap").is_some(), "{r}");
+    assert!(s.state.selection.is_empty());
+    assert!(s.state.gap_selection.is_some());
+    s.execute("edit.clear", json!({})).unwrap();
+    assert_eq!(range(&s, picture2).0, f(48), "the gap closed");
+    assert_eq!(range(&s, sound2).0, f(48));
+    assert!(s.state.gap_selection.is_none());
+}
+
+/// D exactly on a butt cut highlights the edit. Delete joins it when the cut is a through edit.
+#[test]
+fn d_on_a_cut_selects_the_edit_point() {
+    let mut s = Session::default();
+    let [(picture1, _), (picture2, _)] = two_clips(&mut s, [0, 48]);
+    let rate = s.sequence_rate();
+    s.set_playhead(rate.tick_of(48));
+    let r = s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(r.get("editPoints").is_some(), "on the cut, not the incoming clip: {r}");
+    assert!(s.state.selection.is_empty());
+    assert!(!s.state.edit_points.is_empty());
+    assert_eq!(s.state.edit_points[0].clip, picture1);
+    // these two pieces are not a through edit (different source ranges), so Delete does not remove them
+    assert!(s.execute("edit.clear", json!({})).is_err());
+    assert_eq!(range(&s, picture2).0, rate.tick_of(48));
+}
+
 #[test]
 fn hostile_select_gap_parameters_are_errors() {
     let mut s = Session::default();

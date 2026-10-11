@@ -428,6 +428,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if x1 > x0 {
                 let gap = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1, r.rect.max.y - 1.0));
                 p.rect_filled(gap, 0.0, GAP_FILL);
+                // The two edges of the gap: the white separation a selected cut shows.
+                for x in [x0, x1] {
+                    p.line_segment([pos2(x, r.rect.min.y), pos2(x, r.rect.max.y)], Stroke::new(2.0, Color32::WHITE));
+                    let edge = Rect::from_center_size(pos2(x, r.rect.center().y), vec2(4.0, r.rect.height()));
+                    app.auto.add("timeline.gapEdge", edge.intersect(content), "Selected gap edge");
+                }
                 app.auto.add("timeline.gap", gap.intersect(content), "Selected gap");
             }
         }
@@ -493,8 +499,30 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.auto.add(&format!("timeline.throughEdit.{}", te.right.0), r, "Through edit");
             }
         }
-        // selected edit points (trim mode): red brackets for ripple, yellow for roll / regular trim
+        // selected edit points (trim mode): red brackets for ripple, yellow for roll / regular trim,
+        // plus the white cut line D leaves on the edit under the playhead
         super::trim_monitor::paint_edit_points(app, &p, &seq, tr, r, &layout);
+        let cut_xs: Vec<f32> = app
+            .session
+            .state
+            .edit_points
+            .iter()
+            .filter_map(|ep| {
+                let (tid, it) = seq.find_item(ep.clip)?;
+                if tid != r.track {
+                    return None;
+                }
+                Some(layout.x_of(if ep.out { it.end() } else { it.start }))
+            })
+            .collect();
+        for x in cut_xs {
+            if x < content.min.x - 2.0 || x > content.max.x + 2.0 {
+                continue;
+            }
+            p.line_segment([pos2(x, r.rect.min.y), pos2(x, r.rect.max.y)], Stroke::new(2.0, Color32::WHITE));
+            let line = Rect::from_center_size(pos2(x, r.rect.center().y), vec2(4.0, r.rect.height()));
+            app.auto.add("timeline.editLine", line.intersect(content), "Selected edit");
+        }
         // transitions (one being dragged where the drag puts it; the selected ones outlined)
         for trn in &tr.transitions {
             let (start, end) = match &app.tl.drag {

@@ -88,21 +88,49 @@ fn edit_point_navigation_follows_targets_or_any_track() {
     v1_edges.dedup();
     let all = s.active_sequence().unwrap().edit_points();
     s.set_playhead(Tick::ZERO);
-    // Down walks V1's edit points only
-    for e in v1_edges.iter().skip(1) {
+    // Down walks V1, including each clip's last frame and every edge, and does not get stuck.
+    let mut seen = vec![Tick::ZERO];
+    for _ in 0..64 {
+        let before = s.playhead();
         s.execute("playhead.nextEdit", json!({})).unwrap();
-        assert_eq!(s.playhead(), *e);
+        let now = s.playhead();
+        if now == before {
+            break;
+        }
+        assert!(now > before, "Down moved backward ({now:?} after {before:?})");
+        seen.push(now);
     }
-    // Shift+Up walks every track's edit points backwards
-    let mut expect: Vec<Tick> = all.iter().copied().filter(|t| *t < s.playhead()).collect();
-    expect.reverse();
-    for e in expect.iter().take(3) {
-        s.execute("playhead.prevEditAnyTrack", json!({})).unwrap();
-        assert_eq!(s.playhead(), *e);
+    for e in &v1_edges {
+        let on_frame = s.sequence_rate().snap(*e);
+        assert!(seen.contains(&on_frame), "Down never reached edit {on_frame:?}");
     }
+    let rate = s.sequence_rate();
+    for c in &v1 {
+        let end = rate.snap(c.2);
+        let last = rate.snap(end - Tick(1));
+        if last > c.1 && last < end {
+            assert!(seen.contains(&last), "Down never parked on the last frame before {end:?}");
+        }
+    }
+    // From the middle of a clip, Down lands on that clip's last frame, the next Down on the cut,
+    // and Up toggles back to the last frame.
+    let clip = v1[1];
+    s.set_playhead(clip.1 + rate.tick_of(3));
+    s.execute("playhead.nextEdit", json!({})).unwrap();
+    let last = rate.snap(rate.snap(clip.2) - Tick(1));
+    assert_eq!(s.playhead(), last, "Down parks on the clip's last frame");
+    s.execute("playhead.nextEdit", json!({})).unwrap();
+    assert_eq!(s.playhead(), rate.snap(clip.2), "the next Down reaches the cut");
+    s.execute("playhead.prevEdit", json!({})).unwrap();
+    assert_eq!(s.playhead(), last, "Up toggles back to the end of the previous clip");
+    // Shift+Up still moves backward across tracks
+    let at = s.playhead();
+    s.execute("playhead.prevEditAnyTrack", json!({})).unwrap();
+    assert!(s.playhead() < at);
     s.set_playhead(Tick::ZERO);
     s.execute("playhead.nextEditAnyTrack", json!({})).unwrap();
-    assert_eq!(s.playhead(), all[1]);
+    assert!(s.playhead() > Tick::ZERO);
+    assert!(s.playhead() <= all.get(1).copied().unwrap_or(Tick::MAX));
 }
 
 #[test]
@@ -112,7 +140,8 @@ fn select_clip_at_playhead_next_previous_and_go_to_selected_clip() {
     let v1 = items(&s, TrackKind::Video, 0);
     let rate = s.sequence_rate();
     s.set_playhead(v1[1].1 + rate.tick_of(3));
-    // D: the clip under the playhead on V1 (and its linked audio)
+    // D: the clip under the playhead on V1 (and its linked audio). This time is inside the clip,
+    // not on a cut, so it selects the clip rather than the edit.
     let r = s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
     assert!(s.state.selection.contains(&ClipId(v1[1].0)), "{r}");
     assert!(!s.state.selection.is_empty());

@@ -7,6 +7,7 @@ use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_engine::shortcut_presets as presets;
 use filmcraft_engine::shortcuts::{PREMIERE_PRESET, Platform};
+use filmcraft_time::Tick;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
@@ -219,6 +220,64 @@ fn ctrl_chords_fire_shortcuts_off_macos() {
     // and the bare key still does not
     d.key("Z");
     assert_eq!(start_of(&mut d), start);
+}
+
+/// Left moves the playhead back one frame and Right moves it forward.
+#[test]
+fn left_and_right_step_the_playhead_in_their_own_direction() {
+    let mut d = Driver::new();
+    d.exec("playhead.set", json!({"seconds": 2.0}));
+    let start = d.app().session.playhead();
+    d.focus("Timeline");
+    d.key("Left");
+    let back = d.app().session.playhead();
+    assert!(back < start, "Left should move the playhead earlier ({back:?} vs {start:?})");
+    d.key("Right");
+    assert_eq!(d.app().session.playhead(), start, "Right from the previous frame returns to the start");
+    d.key("ArrowRight");
+    let further = d.app().session.playhead();
+    assert!(further > start, "Right should move the playhead later ({further:?} vs {start:?})");
+}
+
+/// A seek while the sequence is playing used to be rewritten from the pre-seek clock, so the
+/// playhead jumped backward and both arrow keys appeared to go left.
+#[test]
+fn a_seek_during_playback_is_not_pulled_backward() {
+    let mut d = Driver::new();
+    d.exec("playhead.set", json!({"seconds": 2.0}));
+    d.harness.state_mut().play(1.0);
+    d.harness.state_mut().playback.preroll_ready = true;
+    d.frames(2);
+    let clocked = d.app().session.playhead();
+    let jumped = clocked + Tick::from_seconds_f64(2.0);
+    d.harness.state_mut().session.set_playhead(jumped);
+    d.frames(3);
+    let now = d.app().session.playhead();
+    assert!(now + Tick::from_seconds_f64(0.25) >= jumped, "playback rewound a seek: now {now:?}, seek {jumped:?}, clock was {clocked:?}");
+}
+
+#[test]
+fn d_in_a_gap_draws_the_gap_and_delete_closes_it() {
+    let mut d = Driver::new();
+    d.exec("file.newSequence", json!({"name": "Gaps", "video": 1, "audio": 1}));
+    let rate = d.app().session.sequence_rate();
+    let item = d.app().session.project.items.values().find(|i| i.has_video() && i.has_audio()).map(|i| i.id.0).unwrap();
+    for frame in [0, 96] {
+        d.exec("timeline.place", json!({"item": item, "frame": frame, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0}));
+    }
+    d.exec("edit.deselectAll", json!({}));
+    d.exec("playhead.set", json!({"frame": 60}));
+    d.focus("Timeline");
+    d.key("D");
+    assert!(d.app().session.state.gap_selection.is_some(), "D selects the gap under the playhead");
+    let edges = d.ok("ui.elements", json!({"prefix": "timeline.gap"}));
+    let ids: Vec<&str> = edges.as_array().unwrap().iter().filter_map(|e| e["id"].as_str()).collect();
+    assert!(ids.contains(&"timeline.gap"), "the gap is drawn: {ids:?}");
+    assert!(ids.contains(&"timeline.gapEdge"), "the gap edges are drawn: {ids:?}");
+    let next = d.app().session.active_sequence().unwrap().video_tracks[0].items[1].id;
+    d.key("Delete");
+    let start = d.app().session.active_sequence().unwrap().find_item(next).map(|(_, i)| i.start);
+    assert_eq!(start, Some(rate.tick_of(48)), "Delete closed the gap");
 }
 
 #[test]

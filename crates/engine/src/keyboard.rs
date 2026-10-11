@@ -37,7 +37,7 @@ use filmcraft_edit as edit;
 pub use filmcraft_export::still::StillFormat;
 use filmcraft_geom::Vec2;
 use filmcraft_project::{ClipId, ItemKind, ParamValue, Sequence, TrackId, TrackKind};
-use filmcraft_time::Tick;
+use filmcraft_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, always, bad, has_selection, has_seq, item_p, slip_together, time_p, with_links};
@@ -69,14 +69,45 @@ fn edits_on(seq: &Sequence, tracks: Option<&[TrackId]>) -> Vec<Tick> {
     v
 }
 
+/// Stops Up/Down walk: each clip edge, snapped onto a frame, plus the last frame of a clip when
+/// that frame is not itself an edge. Landing on the out point shows the next clip's first frame,
+/// so without the extra stop Down can never park on the end of the clip you are in, and Up from
+/// the cut skips that frame.
+pub(crate) fn navigation_stops(seq: &Sequence, tracks: Option<&[TrackId]>, rate: FrameRate) -> Vec<Tick> {
+    let mut v: Vec<Tick> = edits_on(seq, tracks).into_iter().map(|e| rate.snap(e)).collect();
+    v.sort_unstable();
+    v.dedup();
+    let edges = v.clone();
+    for e in edges {
+        if e <= Tick::ZERO {
+            continue;
+        }
+        let prev = rate.snap(e - Tick(1));
+        if prev >= e {
+            continue;
+        }
+        let outgoing = seq
+            .all_tracks()
+            .filter(|t| tracks.is_none_or(|ts| ts.contains(&t.id)))
+            .any(|t| t.items.iter().any(|i| rate.snap(i.end()) == e && i.start <= prev && prev < i.end()));
+        if outgoing {
+            v.push(prev);
+        }
+    }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// Go to the next / previous edit point: on the targeted tracks (`any` = false; all tracks when
 /// none is targeted) or on any track.
 pub fn go_to_edit(s: &mut Session, next: bool, any: bool) -> Result<Value> {
     let t = s.playhead();
     let tg = s.targeting().targeted;
+    let rate = s.sequence_rate();
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let only = (!any && !tg.is_empty()).then_some(tg.as_slice());
-    let edits = edits_on(seq, only);
+    let edits = navigation_stops(seq, only, rate);
     let e = if next { edits.into_iter().find(|e| *e > t) } else { edits.into_iter().rev().find(|e| *e < t) };
     if let Some(e) = e {
         s.set_playhead(e);
@@ -125,15 +156,97 @@ fn reveal_nested(s: &mut Session) -> Result<Value> {
 
 // ------------------------------------------------------------------ selection
 
+/// A gap on a targeted, unlocked track that contains `t`. Topmost video track first, then audio.
+fn gap_under(seq: &Sequence, tracks: &[TrackId], t: Tick) -> Option<crate::GapSelection> {
+    let ordered = seq.video_tracks.iter().rev().chain(seq.audio_tracks.iter());
+    for tr in ordered.filter(|tr| tracks.contains(&tr.id) && !tr.locked) {
+        if tr.item_at(t).is_some() {
+            continue;
+        }
+        if let Some(range) = edit::through::track_gaps(tr).into_iter().find(|g| g.contains(t)) {
+            return Some(crate::GapSelection { track: tr.id, range });
+        }
+    }
+    None
+}
+
+/// Edit points exactly under the playhead: a cut is a roll (both sides), a lone edge is a ripple.
+fn cuts_at(seq: &Sequence, tracks: &[TrackId], t: Tick) -> Vec<crate::trim::EditPoint> {
+    use crate::trim::{EditPoint, TrimKind};
+    let mut pts = Vec::new();
+    for tr in seq.all_tracks().filter(|tr| tracks.contains(&tr.id) && !tr.locked) {
+        let left = tr.items.iter().find(|i| i.end() == t);
+        let right = tr.items.iter().find(|i| i.start == t);
+        match (left, right) {
+            (Some(l), Some(_)) => pts.push(EditPoint { clip: l.id, out: true, kind: TrimKind::Roll }),
+            (Some(l), None) => pts.push(EditPoint { clip: l.id, out: true, kind: TrimKind::Ripple }),
+            (None, Some(r)) => pts.push(EditPoint { clip: r.id, out: false, kind: TrimKind::Ripple }),
+            (None, None) => {}
+        }
+    }
+    pts
+}
+
 fn select_clip_at_playhead(s: &mut Session) -> Result<Value> {
     let t = s.playhead();
     let tg = s.targeting().targeted;
-    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let ids: Vec<ClipId> = seq.all_tracks().filter(|tr| tg.contains(&tr.id)).filter_map(|tr| tr.item_at(t).map(|i| i.id)).collect();
-    s.state.selection = with_links(s, &ids);
-    s.state.edit_points.clear();
-    s.state.caption_selection.clear();
-    Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
+    // Inside a clip, D still selects that clip. On empty time or exactly on a cut it selects the
+    // gap or the edit, so Delete can close the gap (or join a through edit) instead of the clip.
+    enum Pick {
+        Gap(crate::GapSelection),
+        Cuts(Vec<crate::trim::EditPoint>),
+        Clips(Vec<ClipId>),
+    }
+    let pick = {
+        let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        let inside = seq.all_tracks().filter(|tr| tg.contains(&tr.id)).any(|tr| tr.items.iter().any(|i| i.start < t && t < i.end()));
+        if !inside {
+            if let Some(gap) = gap_under(seq, &tg, t) {
+                Pick::Gap(gap)
+            } else {
+                let cuts = cuts_at(seq, &tg, t);
+                if cuts.is_empty() {
+                    let ids = seq.all_tracks().filter(|tr| tg.contains(&tr.id)).filter_map(|tr| tr.item_at(t).map(|i| i.id)).collect();
+                    Pick::Clips(ids)
+                } else {
+                    Pick::Cuts(cuts)
+                }
+            }
+        } else {
+            let ids = seq.all_tracks().filter(|tr| tg.contains(&tr.id)).filter_map(|tr| tr.item_at(t).map(|i| i.id)).collect();
+            Pick::Clips(ids)
+        }
+    };
+    match pick {
+        Pick::Gap(gap) => {
+            let body = json!({"track": gap.track.0, "start": gap.range.start.0, "end": gap.range.end().0});
+            s.state.gap_selection = Some(gap);
+            s.state.selection.clear();
+            s.state.caption_selection.clear();
+            s.state.transition_selection.clear();
+            s.state.edit_points.clear();
+            s.state.trim_shift = Default::default();
+            Ok(json!({"gap": body}))
+        }
+        Pick::Cuts(cuts) => {
+            let n = cuts.len();
+            s.state.edit_points = cuts;
+            s.state.selection.clear();
+            s.state.caption_selection.clear();
+            s.state.transition_selection.clear();
+            s.state.gap_selection = None;
+            s.state.trim_shift = Default::default();
+            Ok(json!({"editPoints": n}))
+        }
+        Pick::Clips(ids) => {
+            s.state.selection = with_links(s, &ids);
+            s.state.edit_points.clear();
+            s.state.caption_selection.clear();
+            s.state.gap_selection = None;
+            s.state.transition_selection.clear();
+            Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
+        }
+    }
 }
 
 /// Select Next / Previous Clip: the clip after (before) the selection on each selected clip's
