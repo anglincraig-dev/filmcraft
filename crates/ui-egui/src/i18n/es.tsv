@@ -578,6 +578,9 @@
 	Transcribe sequence	Transcribir secuencia
 	Speech-to-text turns the dialogue into editable text.	La conversión de voz a texto convierte el diálogo en texto editable.
 	This build has no speech-to-text; import a transcript with transcript.set.	Esta compilación no incluye conversión de voz a texto; importa una transcripción con transcript.set.
+	Local Whisper runs on this machine. The base model downloads once, then transcription stays offline.	Whisper local se ejecuta en este equipo. El modelo base se descarga una vez y después la transcripción sigue sin conexión.
+	This build has no speech engine. Rebuild with --features whisper, or import a transcript with transcript.set.	Esta compilación no incluye motor de voz. Recompila con --features whisper, o importa una transcripción con transcript.set.
+	Remove pauses longer than 0.75s	Quitar pausas de más de 0,75 s
 	Transcribe	Transcribir
 	Extract selected text	Extraer texto seleccionado
 	Lift selected text	Levantar texto seleccionado
@@ -2821,6 +2824,9 @@
 	Video Only	Solo video
 	Audio Only	Solo audio
 	Language:	Idioma:
+	Model:	Modelo:
+	Portuguese (Brazil)	Portugués (Brasil)
+	Spanish (Latin America)	Español (Latinoamérica)
 	Audio on track {t}	Audio de la pista {t}
 	Audio analysis:	Análisis de audio:
 	Recognize when different speakers are talking	Reconocer cuándo hablan personas distintas

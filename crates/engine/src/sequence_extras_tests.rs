@@ -122,6 +122,55 @@ fn transcribe_sequence_runs_transcript_generate_on_its_audio() {
     assert!(s.execute("sequence.transcribe", json!({"track": "A9"})).is_err());
 }
 
+/// A recogniser that records the options `transcript.generate` actually used.
+struct Seen(std::sync::Mutex<Vec<filmcraft_speech::Options>>);
+
+impl filmcraft_speech::Transcriber for Seen {
+    fn id(&self) -> String {
+        "seen".into()
+    }
+    fn transcribe(
+        &self,
+        audio: &[f32],
+        opts: &filmcraft_speech::Options,
+        progress: filmcraft_speech::ProgressFn,
+    ) -> Result<Transcript, filmcraft_speech::SpeechError> {
+        if !progress(1.0, "Done") {
+            return Err(filmcraft_speech::SpeechError::Cancelled);
+        }
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(opts.clone());
+        let mut t = Transcript { language: opts.language.clone().unwrap_or_else(|| "und".into()), source: "seen".into(), ..Transcript::default() };
+        if !audio.is_empty() {
+            t.words.push(Word::new("Oi", Tick::ZERO, Tick::from_seconds_f64(0.2)));
+        }
+        Ok(t)
+    }
+}
+
+#[test]
+fn transcribe_sequence_passes_language_model_and_diarize() {
+    let mut s = demo();
+    let seen = Arc::new(Seen(std::sync::Mutex::new(Vec::new())));
+    s.transcriber = Some(seen.clone());
+    // Settings default to English with auto-detect off. "auto" must still mean detect.
+    assert!(!s.prefs.media_analysis.language_auto_detect);
+    assert_eq!(s.prefs.media_analysis.default_language, "en");
+    let n = s.journal.len();
+    s.execute("sequence.transcribe", json!({"language": "auto", "model": "whisper-small", "diarize": false})).unwrap();
+    let generated = s.journal[n..].iter().find(|(id, _)| id == "transcript.generate").expect("generate ran");
+    assert_eq!(generated.1["language"], "auto");
+    assert_eq!(generated.1["model"], "whisper-small");
+    assert_eq!(generated.1["diarize"], false);
+    let opts = seen.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(!opts.is_empty());
+    assert!(opts.iter().all(|o| o.language.is_none() && !o.diarize), "{opts:?}");
+
+    seen.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.execute("sequence.transcribe", json!({"language": "pt", "model": "whisper-tiny", "diarize": true})).unwrap();
+    let opts = seen.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(opts.iter().all(|o| o.language.as_deref() == Some("pt") && o.diarize), "{opts:?}");
+}
+
 #[test]
 fn simplify_sequence_makes_a_clean_copy() {
     let mut s = demo();

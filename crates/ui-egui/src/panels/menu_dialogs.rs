@@ -334,7 +334,9 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         }
         "sequence.transcribe" => {
             let tracks: Vec<String> = s.active_sequence().map(|q| (1..=q.audio_tracks.len()).map(|i| format!("A{i}")).collect()).unwrap_or_default();
-            (json!({"language": "auto", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
+            // Language "auto" is passed through: omitting it would use Settings, whose default is
+            // English with auto-detect off. Model defaults to whisper-base.
+            (json!({"language": "auto", "model": "whisper-base", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
         }
         "file.saveAsTemplate" => (json!({"name": s.project.name}), Value::Null),
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
@@ -415,7 +417,9 @@ fn combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mu
         let shown = options.iter().find(|o| o.0 == cur).map(|o| o.1.clone()).unwrap_or(cur.clone());
         let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown)).show_ui(ui, |ui| {
             for (k, l) in options {
-                if ui.selectable_label(cur == *k, crate::i18n::t(l)).clicked() {
+                let resp = ui.selectable_label(cur == *k, crate::i18n::t(l));
+                push(elems, format!("{id}.{k}"), &resp, l);
+                if resp.clicked() {
                     *value = json!(k);
                 }
             }
@@ -442,6 +446,31 @@ fn color(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
 fn pairs(v: &[&str]) -> Vec<(String, String)> {
     v.iter().map(|x| (x.to_string(), x.to_string())).collect()
 }
+
+fn named(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+    rows.iter().map(|(k, l)| ((*k).to_string(), (*l).to_string())).collect()
+}
+
+/// Language menu of Transcribe Sequence. Values are the `language` param of `transcript.generate`
+/// (`auto` detects). Portuguese (Brazil) and Spanish (Latin America) use Whisper's `pt` and `es`:
+/// the model has one code per language, not a regional variant.
+const TRANSCRIBE_LANGUAGES: &[(&str, &str)] = &[
+    ("auto", "Auto"),
+    ("en", "English"),
+    ("pt", "Portuguese (Brazil)"),
+    ("es", "Spanish (Latin America)"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("it", "Italian"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("zh", "Chinese"),
+    ("nl", "Dutch"),
+    ("ru", "Russian"),
+];
+
+/// `model` param of `transcript.generate`. `whisper-base` is the default.
+const TRANSCRIBE_MODELS: &[(&str, &str)] = &[("whisper-tiny", "Whisper tiny"), ("whisper-base", "Whisper base"), ("whisper-small", "Whisper small")];
 
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
@@ -740,8 +769,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 );
             }
             "sequence.transcribe" => {
-                let langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
+                let langs = named(TRANSCRIBE_LANGUAGES);
                 combo(ui, &mut elems, "transcribe.language", tl!("Language:"), &mut p["language"], &langs);
+                let models = named(TRANSCRIBE_MODELS);
+                combo(ui, &mut elems, "transcribe.model", tl!("Model:"), &mut p["model"], &models);
                 let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
                 tracks.extend(
                     d.info["tracks"]
@@ -894,9 +925,6 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             if cmd == "markers.addFlashCue" && q["name"].as_str().is_some_and(str::is_empty) {
                 q.as_object_mut().map(|m| m.remove("name"));
             }
-            if cmd == "sequence.transcribe" && q["language"] == "auto" {
-                q.as_object_mut().map(|m| m.remove("language"));
-            }
             s.execute(cmd, q).map_err(|e| e.to_string())?;
             Ok(None)
         }
@@ -960,5 +988,23 @@ pub fn search_bin_rows(
                 filmcraft_project::Bin { id: sb.id, name: sb.name.clone(), children: matches.into_iter().map(filmcraft_project::BinEntry::Item).collect() };
             draw_items(app, ui, &bin, row, actions);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TRANSCRIBE_LANGUAGES, TRANSCRIBE_MODELS};
+
+    #[test]
+    fn transcribe_dialog_offers_craigs_languages_and_the_whisper_models() {
+        let lang = |code: &str| TRANSCRIBE_LANGUAGES.iter().find(|row| row.0 == code).map(|row| row.1);
+        assert_eq!(lang("auto"), Some("Auto"));
+        assert_eq!(lang("en"), Some("English"));
+        assert_eq!(lang("pt"), Some("Portuguese (Brazil)"));
+        assert_eq!(lang("es"), Some("Spanish (Latin America)"));
+        assert!(TRANSCRIBE_LANGUAGES.iter().all(|(code, _)| *code == "auto" || code.len() == 2));
+        assert_eq!(TRANSCRIBE_MODELS.iter().find(|row| row.0 == "whisper-base").map(|row| row.1), Some("Whisper base"));
+        assert!(TRANSCRIBE_MODELS.iter().any(|row| row.0 == "whisper-tiny"));
+        assert!(TRANSCRIBE_MODELS.iter().any(|row| row.0 == "whisper-small"));
     }
 }

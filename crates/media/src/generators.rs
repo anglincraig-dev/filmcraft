@@ -188,6 +188,18 @@ fn hash(n: i64) -> f32 {
     (x >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
 }
 
+/// Lowpassed hash: neighbouring samples stay close, so the bed sounds like air instead of static.
+fn air(n: i64) -> f32 {
+    let mut acc = 0.0;
+    let mut w = 0.0;
+    for k in 0..24 {
+        let wk = 1.0 - k as f32 / 24.0;
+        acc += hash(n.saturating_sub(k as i64)) * wk;
+        w += wk;
+    }
+    if w > 0.0 { acc / w } else { 0.0 }
+}
+
 fn audio_sample(g: &Generator, t: f32, n: i64) -> (f32, f32) {
     match g {
         Generator::BarsAndTone => {
@@ -228,12 +240,14 @@ fn demo_audio(scene: DemoScene, t: f32, n: i64) -> (f32, f32) {
         l += (ph * 1.002).sin() * trem;
         r += (ph * 0.998).sin() * trem;
     }
-    let noise = hash(n)
+    // Air is a short average of the hash, not the hash itself. One uncorrelated value per sample
+    // is white noise and plays as static — the demo's ocean bed was loud enough to bury the pad.
+    let noise = air(n)
         * match scene {
-            DemoScene::OceanSunset => 0.25 * (0.5 + 0.5 * (TAU * t / 6.0).sin()).powi(2),
-            DemoScene::Forest => 0.05,
-            DemoScene::CityNight => 0.08,
-            _ => 0.02,
+            DemoScene::OceanSunset => 0.05 * (0.5 + 0.5 * (TAU * t / 6.0).sin()).powi(2),
+            DemoScene::Forest => 0.02,
+            DemoScene::CityNight => 0.02,
+            _ => 0.012,
         };
     // A soft kick in the city/plasma scenes to make waveforms interesting.
     let beat = if matches!(scene, DemoScene::CityNight | DemoScene::Plasma) {
@@ -567,6 +581,30 @@ mod tests {
         let a = g.audio(0, 480, 48000).unwrap();
         let peak = a.peaks()[0];
         assert!((peak - db(-20.0)).abs() < 1e-3);
+    }
+
+    /// Demo beds used to add a full-band hash at a level comparable to the pad. That ratio of
+    /// sample-to-sample energy is what white noise (static) measures; a tone sits far below it.
+    #[test]
+    fn demo_audio_is_not_sample_rate_static() {
+        for scene in DemoScene::ALL {
+            let g = GeneratorSource::demo(scene);
+            let a = g.audio(48_000, 4_800, 48_000).unwrap();
+            let l = &a.channels[0];
+            let mut energy = 0.0f64;
+            let mut hf = 0.0f64;
+            let mut peak = 0.0f32;
+            for w in l.windows(2) {
+                energy += f64::from(w[0] * w[0]);
+                let d = f64::from(w[1] - w[0]);
+                hf += d * d;
+                peak = peak.max(w[0].abs()).max(w[1].abs());
+            }
+            let ratio = if energy > 1e-9 { hf / energy } else { 0.0 };
+            assert!(ratio < 0.35, "{scene:?} high-frequency ratio {ratio:.3} (static is near 2)");
+            assert!(peak < 1.0, "{scene:?} peaks at {peak}");
+            assert!(energy > 1.0, "{scene:?} should still be audible");
+        }
     }
 
     #[test]

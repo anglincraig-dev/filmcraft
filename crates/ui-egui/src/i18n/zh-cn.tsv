@@ -569,6 +569,9 @@
 	Transcribe sequence	转录序列
 	Speech-to-text turns the dialogue into editable text.	语音转文字可将对白转换为可编辑文本。
 	This build has no speech-to-text; import a transcript with transcript.set.	此版本不含语音转文字；请使用 transcript.set 导入转录文稿。
+	Local Whisper runs on this machine. The base model downloads once, then transcription stays offline.	本地 Whisper 在本机运行。基础模型下载一次后，转录即可离线进行。
+	This build has no speech engine. Rebuild with --features whisper, or import a transcript with transcript.set.	此版本不含语音引擎。请使用 --features whisper 重新构建，或使用 transcript.set 导入转录文稿。
+	Remove pauses longer than 0.75s	移除长于 0.75 秒的停顿
 	Transcribe	转录
 	Extract selected text	提取所选文本
 	Lift selected text	提升所选文本
@@ -2804,6 +2807,9 @@
 	Video Only	仅视频
 	Audio Only	仅音频
 	Language:	语言：
+	Model:	模型:
+	Portuguese (Brazil)	葡萄牙语（巴西）
+	Spanish (Latin America)	西班牙语（拉丁美洲）
 	Audio on track {t}	轨道 {t} 上的音频
 	Audio analysis:	音频分析：
 	Recognize when different speakers are talking	识别不同说话人讲话时
