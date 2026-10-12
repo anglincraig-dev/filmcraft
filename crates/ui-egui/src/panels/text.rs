@@ -301,7 +301,9 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
         app.auto.add("text.transcript.generate", r, "Transcribe");
         if resp.clicked() {
-            actions.push(("transcript.generate".into(), json!({})));
+            // Ask for language (and model) before transcribing. An empty call opens the dialog;
+            // Transcribe on that dialog runs sequence.transcribe with the chosen params.
+            actions.push(("sequence.transcribe".into(), json!({})));
         }
         run(app, ui, actions);
         return;

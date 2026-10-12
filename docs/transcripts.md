@@ -22,7 +22,7 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect; an omitted language uses Settings), `diarize`, `maxSpeakers`. One undo step. |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
@@ -34,6 +34,17 @@ the control channel and MCP agents can do the same.
 | `transcript.removePauses` | Ripple-delete pauses longer than `minSeconds`, keeping `keepSeconds` of air on both sides. |
 | `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `minSeconds`, `maxSeconds`, `gapFrames`). |
 | `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one. |
+
+## Transcribe dialog
+
+Sequence ▸ **Transcribe Sequence…** and the Transcript tab's **Transcribe** button open a dialog
+before recognition starts. **Language** is Auto, English (`en`), Portuguese (Brazil) (`pt`),
+Spanish (Latin America) (`es`), plus the other Whisper codes the engine accepts. Whisper has one
+code per language, so Brazilian Portuguese and Latin American Spanish use `pt` and `es`. **Model**
+is `whisper-tiny`, `whisper-base` (the default) or `whisper-small`. **Separate speakers** is the
+`diarize` checkbox (on unless cleared). Cancel closes the dialog. Transcribe runs
+`sequence.transcribe`, which forwards `language`, `model` and `diarize` to `transcript.generate`.
+`language: "auto"` detects the language even when Settings name a default language.
 
 ## Speech recognition
 
